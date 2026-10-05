@@ -89,6 +89,44 @@ Do not run an interactive initializer that waits for choices. Use a verified tem
 
 ### 1. Inspect, then reuse
 
+#### Mandatory preflight before building
+
+Check prerequisites before installing packages, writing runtime code, or starting services.
+First locate the actual project root and existing private configuration.
+A fresh Git checkout does not include ignored environment files or the machine's login state.
+Do not declare credentials missing until you check the supported sources below.
+
+Use one project configuration file: `.env`, with permission 600.
+Use `.env.example` as the complete variable contract. Its credential fields must stay empty.
+Load `.env` into every agent, API, worker, payment setup, and preflight process.
+For Node entry points, use `node --env-file-if-exists=.env ENTRY_POINT` from the project root.
+Do not assume a package script loads `.env`. Inspect its actual command.
+Shell environment values take precedence over `.env`. Check override names without printing values.
+On resume, merge known legacy `.env.local` values into `.env` only where canonical values are absent.
+Preserve legacy files until all consumers use `.env`. Never overwrite conflicting values silently.
+Do not search sibling projects for credentials. Reuse them only when the user authorizes that source.
+Keep generated node secrets in `.local/mps.env` and the scoped payment token in `.local/mps-runtime.env`.
+These are private service outputs, not alternative sources for model configuration.
+Keep the Coworker credential in the supported CLI vault. Do not put it in `.env`.
+
+Run `sokosumi --preprod auth whoami --json` with the same environment as the worker.
+Check the returned account through the supported interface. Do not inspect the credential vault.
+If AUTH_REQUIRED occurs, record authentication as blocked before creating account records.
+Do not restart login automatically or confuse account login with the Coworker runtime key.
+Check model and Blockfrost variable presence without printing their values.
+Preserve the configured ZAI_BASE_URL and ZAI_MODEL. Do not replace a working Coding endpoint with the general endpoint.
+Run one small model call and one authenticated Preprod chain read before calling these connections verified.
+Check PostgreSQL, MPS dependencies, free ports, and existing service ownership.
+Save each preflight result once. Recheck only after a relevant state change.
+
+If account, model, or Blockfrost access is blocked, prepare only independent work with a useful result.
+Do not spend the remaining window generating another payment stack or adding optional tools.
+Existing tests prove their assertions only. They do not prove login, model access, or Coworker pickup.
+A running HTTP server is not a connected Coworker.
+Prove a real model turn, runtime authentication, and Task pickup before reporting a working worker.
+At five minutes, return one checkpoint. Do not repeat unchanged blocker messages.
+
+
 Read this project's non-secret setup record before creating anything.
 For a new project, create `docs/setup-state.json` with purpose, selected account, resource names, and checkpoints.
 Keep one current-state summary. Put historical errors and corrections in a separate record.
