@@ -1,0 +1,33 @@
+{
+  "purpose": "TOKEN2049 event recommendations",
+  "purposeProvenance": "INFERRED: project guide specifies the TOKEN2049 CSV",
+  "phase": "BUILD_NOT_STARTED",
+  "guide": {
+    "provenance": "VERIFIED: git fetch origin main and git rev-parse origin/main",
+    "commit": "c524fcb6c25b82a7f10f3e547474365909c2b4dd"
+  },
+  "eventSource": {
+    "provenance": "VERIFIED: git show origin/feat/token2049-event-guide:data/token2049-luma-events.csv",
+    "commit": "25844b9f2ea9781dcc3178cbb147c45404fd3d7f",
+    "path": "data/token2049-luma-events.csv",
+    "limit": "Supplied snapshot. Event facts have not been checked."
+  },
+  "preflight": {
+    "node": "VERIFIED: node --version returned v25.8.1",
+    "sokosumi": "VERIFIED: sokosumi --version returned 1.0.4",
+    "account": "VERIFIED: sokosumi --preprod auth whoami --json returned target preprod and platformRole admin",
+    "postgres": "VERIFIED: pg_isready -h 127.0.0.1 -p 5432 returned accepting connections outside the sandbox",
+    "postgresLimit": "Server readiness only. Database permissions and migrations remain untested.",
+    "model": "VERIFIED: no .env exists and no ZAI_ override names appeared in the process environment",
+    "modelLimit": "Model connection has not been tested. Configure authorized credentials before building.",
+    "blockfrost": "VERIFIED: no .env exists and no BLOCKFROST_ override names appeared in the process environment",
+    "blockfrostLimit": "Chain connection has not been tested. Configure an authorized Preprod key before building."
+  },
+  "resources": {
+    "vendorId": null,
+    "coworkerId": null,
+    "sellerAddress": null,
+    "database": null
+  },
+  "nextAction": "Configure private .env using .env.example, then request the live build. Recheck login before creating resources."
+}

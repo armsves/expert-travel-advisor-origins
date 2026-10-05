@@ -2,4 +2,9 @@
 .env.*
 !.env.example
 .postgres.env
+.local/
 node_modules/
+.eve/
+.workflow/
+.output/
+dist/

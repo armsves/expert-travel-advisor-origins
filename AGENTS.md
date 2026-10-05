@@ -404,9 +404,12 @@ Persist progress before model sends and posts. Uncertain writes must not repeat 
 One blocked Task must not stop replies or execution for other Tasks.
 
 Return this concise final message, replacing every field with observed state:
+Use the exact Coworker name returned by Sokosumi registration for REGISTERED_NAME.
+If registration did not succeed, report `Registered Coworker: not registered` and the exact blocker.
 
 ```text
 Local agent: NAME. TOPIC.
+Registered Coworker: REGISTERED_NAME.
 Status: LOCAL_READY_AWAITING_FUNDING, or PARTIAL with exact blockers.
 Test: actual smoke-test or execution Task result.
 Fund the dedicated selling wallet with test ADA on Cardano Preprod:
