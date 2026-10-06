@@ -1,0 +1,20 @@
+{
+  "name": "expert-travel-advisor",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env start.mjs",
+    "worker": "node --env-file-if-exists=.env worker.mjs",
+    "test": "node --env-file-if-exists=.env --test *.test.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "3.0.62",
+    "@vercel/blob": "^2.8.1",
+    "ai": "7.0.127",
+    "eve": "0.71.0",
+    "zod": "4.6.5"
+  }
+}

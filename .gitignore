@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.local/
+__pycache__/
+*.pyc
+node_modules/
+.venv/
+.eve/
+.workflow/
+.output/
+dist/
+.vercel/
+.vercel
+.env*.local
