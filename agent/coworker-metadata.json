@@ -1,0 +1,47 @@
+{
+  "channels": {
+    "email": "armsves@gmail.com"
+  },
+  "profile": {
+    "hosting": "Local Eve agent and Sokosumi worker",
+    "capabilities": [
+      "Stay brief",
+      "Pay later",
+      "Free cancellation",
+      "Hotels.com gift card"
+    ],
+    "examples": [
+      "Prepare a pay-later stay brief for Manila from 2026-10-18 to 2026-10-22 for 2 adults"
+    ]
+  },
+  "offers": [
+    {
+      "title": "Prepare a stay brief",
+      "category": "Travel",
+      "prompt": "Prepare a pay-later, free-cancellation stay brief for Manila from 2026-10-18 to 2026-10-22 for 2 adults.",
+      "description": "Turns a city and stay dates into a brief. It does not look up live inventory or book a stay.",
+      "deliverable": "City, dates, adult count, stay criteria, and what to verify before booking.",
+      "outputs": [
+        {
+          "type": "text",
+          "label": "Sample brief",
+          "text": "Manila, 18-22 Oct 2026, 2 adults. Search pay-later stays with free cancellation. Live prices are not included."
+        }
+      ]
+    },
+    {
+      "title": "Quote a Hotels.com gift card",
+      "category": "Travel",
+      "prompt": "Find a pay-later free-cancellation stay and quote a Hotels.com gift card for that total.",
+      "description": "Quotes a Hotels.com gift card for the stay total. The card is not purchased. The stay remains pay later with free cancellation.",
+      "deliverable": "The pay-later stay and a gift card quote in ADA.",
+      "outputs": [
+        {
+          "type": "text",
+          "label": "Payment instruction",
+          "text": "The gift card is quoted in ADA and is not purchased. The stay remains pay later with free cancellation."
+        }
+      ]
+    }
+  ]
+}
