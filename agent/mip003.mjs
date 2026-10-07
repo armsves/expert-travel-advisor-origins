@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { EXPERT_TRAVEL_ADVISOR } from './expert-travel-advisor.mjs';
+import { describeEscrow } from './sokosumi-payment.mjs';
 
 export const INPUT_SCHEMA = {
   input_data: [
@@ -27,6 +29,26 @@ export const DEMO = {
 
 export function canonicalJson(value) {
   return JSON.stringify(canonicalize(value));
+}
+
+export function stayRequest(inputData) {
+  if (typeof inputData?.request === 'string' && inputData.request.trim()) return inputData.request.trim();
+  if (typeof inputData?.trip_request_json !== 'string') return '';
+  let parsed;
+  try {
+    parsed = JSON.parse(inputData.trip_request_json);
+  } catch {
+    return '';
+  }
+  const stays = parsed?.stays || parsed;
+  const city = String(stays?.location?.city || '').trim();
+  const checkIn = String(stays?.check_in_date || '').trim();
+  const checkOut = String(stays?.check_out_date || '').trim();
+  const adults = Number(stays?.rooms?.[0]?.adults || 2);
+  const property = String(stays?.property_id || stays?.hotel_id || '').trim();
+  if (!city || !/^\d{4}-\d{2}-\d{2}$/.test(checkIn) || !/^\d{4}-\d{2}-\d{2}$/.test(checkOut)) return '';
+  const place = property ? `Book property ${property} in ${city}` : `in ${city}`;
+  return `${place} from ${checkIn} to ${checkOut} for ${adults} adults, pay later, free cancellation. Return the hotel list.`;
 }
 
 export function inputHash(inputData, identifier) {
@@ -72,14 +94,15 @@ async function startJob(body, env, store, payment, now) {
   if (!identifier) return json(400, { detail: 'identifier_from_purchaser is required' });
   const inputData = body.input_data && typeof body.input_data === 'object' && !Array.isArray(body.input_data) ? body.input_data : null;
   if (!inputData) return json(400, { detail: 'input_data must match the input schema' });
-  const errors = validateInput(inputData, INPUT_SCHEMA);
+  const request = stayRequest(inputData);
+  if (!request) return json(400, { detail: 'input_data must match the input schema' });
+  const errors = validateInput({ request }, INPUT_SCHEMA);
   if (errors) return json(400, { detail: errors });
 
-  const agentIdentifier = String(env.AGENT_IDENTIFIER || '').trim();
+  const agentIdentifier = EXPERT_TRAVEL_ADVISOR;
   const paymentUrl = String(env.PAYMENT_SERVICE_URL || '').trim();
   const paymentKey = String(env.PAYMENT_API_KEY || '').trim();
   const missing = [
-    ['AGENT_IDENTIFIER', agentIdentifier],
     ['PAYMENT_SERVICE_URL', paymentUrl],
     ['PAYMENT_API_KEY', paymentKey],
   ].filter(([, present]) => !present).map(([name]) => name);
@@ -96,7 +119,7 @@ async function startJob(body, env, store, payment, now) {
     id: randomUUID(),
     status: 'awaiting_payment',
     identifierFromPurchaser: identifier,
-    inputData,
+    inputData: { ...inputData, request },
     inputHash: hash,
     blockchainIdentifier: String(data.blockchainIdentifier || ''),
     payByTime: unixTime(data.payByTime),
@@ -104,9 +127,15 @@ async function startJob(body, env, store, payment, now) {
     unlockTime: unixTime(data.unlockTime),
     externalDisputeUnlockTime: unixTime(data.externalDisputeUnlockTime),
     agentIdentifier: String(data.agentIdentifier || agentIdentifier),
-    sellerVKey: String(data.sellerVKey || env.SELLER_VKEY || ''),
+    sellerVKey: String(data.SmartContractWallet?.walletVkey || data.sellerVKey || env.SELLER_VKEY || ''),
+    paymentSourceType: 'Web3CardanoV2',
+    supportedPaymentSourceIndex: Number(env.SUPPORTED_PAYMENT_SOURCE_INDEX || 0),
     result: null,
     inputSchema: null,
+    paymentId: String(data.id || ''),
+    onChainState: String(data.onChainState || ''),
+    nextAction: String(data.NextAction?.requestedAction || ''),
+    txHash: String(data.CurrentTransaction?.txHash || ''),
   };
   if (!job.blockchainIdentifier) return json(500, { detail: 'The payment service did not return a blockchain identifier' });
   await store.put(job);
@@ -119,9 +148,16 @@ async function startJob(body, env, store, payment, now) {
     externalDisputeUnlockTime: job.externalDisputeUnlockTime,
     agentIdentifier: job.agentIdentifier,
     sellerVKey: job.sellerVKey,
+    paymentSourceType: job.paymentSourceType,
+    supportedPaymentSourceIndex: job.supportedPaymentSourceIndex,
     identifierFromPurchaser: job.identifierFromPurchaser,
     input_hash: job.inputHash,
     inputHash: job.inputHash,
+    paymentId: job.paymentId,
+    onChainState: job.onChainState,
+    nextAction: job.nextAction,
+    txHash: job.txHash,
+    transaction: describeEscrow(job),
   });
 }
 
@@ -236,7 +272,11 @@ async function jobs(store) {
   return store || (process.env.BLOB_READ_WRITE_TOKEN ? blobStore() : fileStore());
 }
 
-function fileStore(file = '.local/mip003-jobs.json') {
+function jobFile() {
+  return process.env.VERCEL ? '/tmp/mip003-jobs.json' : '.local/mip003-jobs.json';
+}
+
+function fileStore(file = jobFile()) {
   return {
     async get(id) {
       return readAll(file)[id] || null;
@@ -284,25 +324,42 @@ async function blobStore() {
   };
 }
 
+const PREPROD_USDM = '16a55b2a349361ff88c03788f93e1e966e5d689605d044fef722ddde0014df10745553444d';
+
+export function paymentRequestBody({ agentIdentifier, network, identifierFromPurchaser, inputHash: hash, now = () => Date.now(), env = {} }) {
+  const started = now();
+  const body = {
+    agentIdentifier,
+    network: network || 'Preprod',
+    paymentSourceType: 'Web3CardanoV2',
+    supportedPaymentSourceIndex: Number(env.SUPPORTED_PAYMENT_SOURCE_INDEX || 0),
+    payByTime: new Date(started + 30 * 60 * 1000).toISOString(),
+    submitResultTime: new Date(started + 40 * 60 * 1000).toISOString(),
+    unlockTime: new Date(started + 55 * 60 * 1000).toISOString(),
+    externalDisputeUnlockTime: new Date(started + 70 * 60 * 1000).toISOString(),
+    identifierFromPurchaser,
+    inputHash: hash,
+  };
+  body.RequestedFunds = [{ amount: '1000000', unit: PREPROD_USDM }];
+  return body;
+}
+
 function defaultPayment(env, now = () => Date.now()) {
   const base = String(env.PAYMENT_SERVICE_URL || '').replace(/\/$/, '');
   const headers = { token: env.PAYMENT_API_KEY, 'content-type': 'application/json' };
   return {
     async create({ agentIdentifier, network, identifierFromPurchaser, inputHash: hash }) {
-      const payBy = new Date(now() + 12 * 60 * 60 * 1000).toISOString();
-      const submitBy = new Date(now() + 24 * 60 * 60 * 1000).toISOString();
       const response = await fetch(`${base}/payment/`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({
+        body: JSON.stringify(paymentRequestBody({
           agentIdentifier,
-          network: network || 'Preprod',
-          paymentType: 'Web3CardanoV1',
-          payByTime: payBy,
-          submitResultTime: submitBy,
+          network,
           identifierFromPurchaser,
           inputHash: hash,
-        }),
+          now,
+          env,
+        })),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {

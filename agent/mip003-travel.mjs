@@ -1,10 +1,47 @@
 import { choiceQuestion, chooseStay, confirmationQuestion, inspectRequest } from './follow-up.mjs';
 import { quoteHotelsGiftCard, quotedStayAmount, renderGiftCard } from './gift-card.mjs';
-import { renderResult, searchStay } from './hotels-search.mjs';
+import { bookReservation, reservationResult, searchStay } from './hotels-search.mjs';
+
+export function advisorHotelResult(found) {
+  const stays = found.bookable?.length ? found.bookable : found.stays || [];
+  const hotels = stays.map((stay) => ({
+    id: String(stay.property_id),
+    name: stay.name,
+    lodging: stay.lodging || undefined,
+    cheapest_total: parsePrice(stay.price),
+    rooms: [{ refundable: Boolean(stay.free_cancellation) }],
+    url: stay.checkout?.checkout_url || stay.url || undefined,
+  })).filter((hotel) => hotel.cheapest_total);
+  return {
+    results: {
+      stays: {
+        observed_at: new Date().toISOString(),
+        data: { hotels },
+        checkout_url: found.checkout?.checkout_url || hotels.find((hotel) => hotel.url)?.url || null,
+      },
+    },
+  };
+}
+
+function parsePrice(price) {
+  const match = String(price || '').replace(/,/g, '').match(/(\d+(?:\.\d+)?)/);
+  if (!match) return null;
+  return { amount: Number(match[1]), currency: 'USD' };
+}
 
 export async function advanceTravelJob(job) {
   const request = String(job.inputData?.request || '');
   const reply = job.pendingInput || {};
+  if (!job.brief && /return the hotel list/i.test(request)) {
+    const inspected = inspectRequest(request);
+    if (inspected.question) return { status: 'failed', result: inspected.question, inputSchema: null };
+    const found = await searchStay({ ...inspected.brief, property_id: inspected.brief.property_id || '' });
+    const payload = advisorHotelResult(found);
+    if (!payload.results.stays.data.hotels.length) {
+      return { status: 'failed', result: 'Hotels.com returned no pay-later stay with free cancellation.', inputSchema: null };
+    }
+    return { status: 'completed', inputSchema: null, result: JSON.stringify(payload) };
+  }
   if (!job.brief) {
     const extra = typeof reply.request === 'string' ? `${request}\n${reply.request}` : request;
     const inspected = inspectRequest(extra);
@@ -25,7 +62,7 @@ export async function advanceTravelJob(job) {
         },
       };
     }
-    const found = searchStay({ ...inspected.brief, action: 'bookable', property_id: '' });
+    const found = await searchStay({ ...inspected.brief, action: 'bookable', property_id: '' });
     const stays = found.bookable || [];
     if (!stays.length) {
       return { status: 'failed', result: 'Hotels.com returned no pay-later stay with free cancellation.', inputSchema: null };
@@ -71,12 +108,12 @@ export async function advanceTravelJob(job) {
   if (reply.confirm !== true) {
     return { status: 'completed', result: 'The stay was not confirmed. No reservation was made and the gift card was not purchased.', inputSchema: null };
   }
-  const summary = renderResult({ ...job.search, stays: [job.selected], checkout: job.selected.checkout, action: 'checkout' });
+  const reservation = bookReservation(job.selected?.checkout?.checkout_url || '').reservation;
   const quote = job.giftQuote ? `\n\n${job.giftQuote}` : '';
   return {
     status: 'completed',
     inputSchema: null,
-    result: `${summary}${quote}\n\nYou confirmed the stay. It remains pay later with free cancellation. No card was charged, and the gift card was quoted only.`,
+    result: `${reservationResult(job.selected, reservation)}${quote}`,
   };
 }
 

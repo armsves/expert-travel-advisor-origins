@@ -20,7 +20,7 @@ export function choiceQuestion(payload) {
   stays.forEach((stay, index) => {
     lines.push(`${index + 1}. ${stay.name}, ${stay.price}, free cancellation ${stay.free_cancellation}`);
   });
-  lines.push('', 'These rates opened a Hotels.com checkout. Reply with the number you want. I will ask for a final yes before sending the checkout link.');
+  lines.push('', 'These rates opened a Hotels.com checkout. Reply with the number you want. I will ask for a final yes before making the reservation.');
   lines.push('A Hotels.com gift card for the stay you pick is quoted only. The stay remains pay later with free cancellation.');
   return lines.join('\n');
 }
@@ -30,7 +30,7 @@ export function confirmationQuestion(stay, brief, giftQuote) {
     `Final confirmation: ${stay.name} at ${stay.price} for ${brief.check_in} to ${brief.check_out}, ${brief.adults} adults, pay later, free cancellation.`,
   ];
   if (giftQuote) lines.push('', giftQuote);
-  lines.push('', 'Reply yes to continue this pay-later stay. Reply no to stop. The gift card is not purchased.');
+  lines.push('', 'Reply yes to make this pay-later reservation on the saved card. Reply no to stop. The gift card is not purchased.');
   return lines.join('\n');
 }
 

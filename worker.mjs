@@ -2,10 +2,12 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { consult } from './client.mjs';
 import { acquireWorkerLock } from './worker-lock.mjs';
-import { choiceQuestion, chooseStay, confirmationQuestion, inspectRequest, replyIntent } from './agent/follow-up.mjs';
+import { chooseStay, confirmationQuestion, inspectRequest, replyIntent } from './agent/follow-up.mjs';
 import { quoteHotelsGiftCard, quotedStayAmount, renderGiftCard, wantsGiftCard } from './agent/gift-card.mjs';
-import { HotelsError, renderResult, searchStay } from './agent/hotels-search.mjs';
+import { describeEscrow, lowestQuotedAmount, lowestUsdInText, readEscrow, requestSokosumiPayment, submitPaymentResult } from './agent/sokosumi-payment.mjs';
+import { bookReservation, HotelsError, renderResult, reservationResult, searchStay } from './agent/hotels-search.mjs';
 
 const id = process.env.COWORKER_ID?.trim();
 if (!id) throw new Error('COWORKER_ID is missing. Add it to .env.');
@@ -53,8 +55,10 @@ async function ensureStatus(taskId, status) {
   }
 }
 
-function ask(taskId, comment) {
-  return ensureStatus(taskId, 'RUNNING').then(() => coworkerEvent(taskId, { status: 'INPUT_REQUIRED', comment }));
+function ask(taskId, comment, masumiPayment) {
+  const body = { status: 'INPUT_REQUIRED', comment };
+  if (masumiPayment) body.masumiPayment = masumiPayment;
+  return ensureStatus(taskId, 'RUNNING').then(() => coworkerEvent(taskId, body));
 }
 
 function userReplies(taskId, seenCommentId) {
@@ -67,9 +71,9 @@ function latestReply(taskId, seenCommentId) {
   return replies.length ? replies[replies.length - 1] : null;
 }
 
-function searchRequest(brief) {
+async function searchRequest(brief) {
   try {
-    const result = searchStay({ ...brief, action: 'bookable', property_id: '' });
+    const result = await searchStay({ ...brief, action: 'bookable', property_id: '' });
     if (!result.bookable?.length) {
       const skipped = (result.skipped || []).map((stay) => `${stay.name} at ${stay.price}`).join('; ');
       throw new HotelsError(skipped
@@ -116,12 +120,99 @@ function markRunning(taskId) {
   return ensureStatus(taskId, 'RUNNING');
 }
 
-async function finish(task, resultFile, journal, state, text) {
+function withEscrowRelease(state, payment, resultText) {
+  if (!payment?.blockchainIdentifier) return state;
+  const releases = state.escrowReleases || [];
+  if (releases.some((item) => item.blockchainIdentifier === payment.blockchainIdentifier)) return state;
+  return {
+    ...state,
+    escrowReleases: [...releases, { blockchainIdentifier: payment.blockchainIdentifier, resultText, released: false }],
+  };
+}
+
+async function releaseReadyEscrows(journal, state) {
+  const releases = [];
+  let changed = false;
+  for (const item of state.escrowReleases || []) {
+    if (item.released) {
+      releases.push(item);
+      continue;
+    }
+    try {
+      const outcome = await submitPaymentResult(item);
+      releases.push(outcome.released ? { ...item, released: true } : item);
+      if (outcome.released) {
+        changed = true;
+        console.log('Escrow release requested', item.blockchainIdentifier.slice(0, 12));
+      }
+    } catch (error) {
+      releases.push(item);
+      console.error('Escrow release waiting', error.message.slice(0, 200));
+    }
+  }
+  return changed ? save(journal, { ...state, escrowReleases: releases }) : { ...state, escrowReleases: releases };
+}
+
+async function finish(task, resultFile, journal, state, text, masumiPayment) {
   writeFileSync(resultFile, text, { mode: 0o600 });
   await markRunning(task.id);
-  const completed = cli(['runtime', 'complete', task.id, ...scopeArgs(), '--coworker-id', id, '--result-file', resultFile]);
-  save(journal, { ...state, phase: 'completed', completion: completed });
+  const completed = masumiPayment
+    ? await coworkerEvent(task.id, { status: 'COMPLETED', comment: text, masumiPayment })
+    : cli(['runtime', 'complete', task.id, ...scopeArgs(), '--coworker-id', id, '--result-file', resultFile]);
+  save(journal, { ...withEscrowRelease(state, masumiPayment, text), phase: 'completed', completion: completed });
   console.log('Completed', task.id);
+}
+
+async function settleReservation(task, resultFile, journal, state) {
+  const amount = quotedStayAmount(state.selected);
+  const quote = state.giftQuote ? `\n\n${state.giftQuote}` : '';
+  const summary = `${reservationResult(state.selected, state.reservation)}${quote}`;
+  let payment = state.bookingPayment;
+  if (!payment) {
+    payment = await requestSokosumiPayment({ taskId: task.id, amountUsd: amount, purpose: 'booking' });
+    state = save(journal, { ...state, bookingPayment: payment });
+  }
+  await finish(task, resultFile, journal, state, `${summary}\n\nSokosumi was asked to pay ${amount} USD to the payment service for this reservation. The hotel stay remains pay later with free cancellation.`, payment);
+}
+
+function stayReport(state) {
+  const search = { ...state.search, adults: state.brief?.adults };
+  const stays = state.stays || [];
+  const lines = [
+    `I found ${stays.length} pay-later, free-cancellation stay${stays.length === 1 ? '' : 's'} in ${search.destination}.`,
+    `Dates: ${search.check_in} to ${search.check_out}. Adults: ${search.adults || 2}.`,
+    '',
+  ];
+  stays.forEach((stay, index) => {
+    lines.push(`${index + 1}. ${stay.name}, ${stay.price}, free cancellation ${stay.free_cancellation}`);
+  });
+  lines.push('', 'The hotel stay remains pay later with free cancellation. The gift card is not purchased.');
+  return lines.join('\n');
+}
+
+async function showResults(task, journal, state) {
+  const pendingResult = state.pendingResult || stayReport(state);
+  let payment = state.resultsPayment || null;
+  let amount = state.resultsAmount || '';
+  if (!payment) {
+    amount = state.resultsAmount || lowestQuotedAmount(state.stays);
+    payment = await requestSokosumiPayment({ taskId: task.id, amountUsd: amount, purpose: 'results' });
+    state = save(journal, { ...state, pendingResult, resultsPayment: payment, resultsAmount: amount, phase: 'awaiting-escrow' });
+  }
+  if (!state.chargePosted) {
+    const event = await ask(task.id, `Sokosumi payment of ${amount} USD was requested for Expert Travel Advisor.\n${describeEscrow(payment)}\nThe stay result will be sent after that escrow is funded.`, payment);
+    state = save(journal, { ...state, pendingResult, chargePosted: true, phase: 'awaiting-escrow', askedEventId: event.event?.id || event.id });
+  }
+  return state;
+}
+
+async function deliverFundedResult(task, resultFile, journal, state) {
+  const escrow = await readEscrow({ blockchainIdentifier: state.resultsPayment?.blockchainIdentifier });
+  if (!escrow.funded) return state;
+  const text = `${describeEscrow({ ...state.resultsPayment, ...escrow })}\n\n${state.pendingResult}`;
+  await finish(task, resultFile, journal, state, text);
+  const delivered = save(journal, withEscrowRelease({ ...state, phase: 'completed', pendingResult: text }, state.resultsPayment, text));
+  return releaseReadyEscrows(journal, delivered);
 }
 
 console.log('Continuous worker running', process.pid);
@@ -135,6 +226,9 @@ while (true) {
       const resultFile = `.local/${task.id}.txt`;
       let state = existsSync(journal) ? JSON.parse(readFileSync(journal, 'utf8')) : {};
       try {
+        if ((state.escrowReleases || []).some((item) => !item.released)) {
+          state = await releaseReadyEscrows(journal, state);
+        }
         if (task.status === 'READY' && !state.phase) {
           save(journal, { phase: 'starting' });
           const started = cli(['runtime', 'start', task.id, ...scopeArgs(), '--coworker-id', id]);
@@ -143,37 +237,47 @@ while (true) {
           state = save(journal, { phase: 'started', input: `${name}\n${description}` });
         }
         if (state.phase === 'started') {
-          const inspected = inspectRequest(state.input);
-          if (inspected.question) {
-            const event = await ask(task.id, inspected.question);
-            state = save(journal, { ...state, phase: 'awaiting-details', question: inspected.question, askedEventId: event.event?.id });
-            console.log('Asked', task.id);
+          let turn;
+          try {
+            turn = await consult(state.input, `.local/${task.id}-eve.json`);
+          } catch (error) {
+            await finish(task, resultFile, journal, state, `Could not complete the stay request. ${error.message.slice(0, 240)}`);
             continue;
           }
-          const found = searchRequest(inspected.brief);
-          if (found.error) {
-            await finish(task, resultFile, journal, state, found.error);
+          const amount = lowestUsdInText(turn.message);
+          if (!amount) {
+            const question = turn.question || turn.message;
+            if (question && (turn.question || question.includes('?'))) {
+              const event = await ask(task.id, question);
+              state = save(journal, { ...state, phase: 'awaiting-details', question, askedEventId: event.event?.id || event.id });
+              console.log('Asked', task.id);
+              continue;
+            }
+            await finish(task, resultFile, journal, state, question || 'Could not complete the stay request.');
             continue;
           }
-          state = save(journal, { phase: 'posting-choice', input: state.input, brief: inspected.brief, stays: found.result.stays, search: found.result });
-          const question = choiceQuestion({ ...found.result, adults: inspected.brief.adults });
-          const event = await ask(task.id, question);
           state = save(journal, {
-            phase: 'awaiting-choice',
+            phase: 'posting-choice',
             input: state.input,
-            brief: inspected.brief,
-            stays: found.result.stays,
-            search: found.result,
-            askedEventId: event.event?.id,
+            pendingResult: turn.message,
+            resultsAmount: amount,
           });
-          console.log('Asked', task.id);
+          await showResults(task, journal, state);
+          console.log('Payment requested', task.id);
           continue;
         }
         if (state.phase === 'posting-choice') {
-          const question = choiceQuestion({ ...state.search, adults: state.brief.adults });
-          const event = await ask(task.id, question);
-          state = save(journal, { ...state, phase: 'awaiting-choice', askedEventId: event?.id });
-          console.log('Asked', task.id);
+          await showResults(task, journal, state);
+          console.log('Payment requested', task.id);
+          continue;
+        }
+        if (state.phase === 'awaiting-escrow') {
+          if (!state.chargePosted) {
+            await showResults(task, journal, state);
+            continue;
+          }
+          const delivered = await deliverFundedResult(task, resultFile, journal, state);
+          if (delivered.phase === 'completed') console.log('Delivered after escrow', task.id);
           continue;
         }
         if (state.phase === 'awaiting-gift-card') {
@@ -183,6 +287,32 @@ while (true) {
           const event = await ask(task.id, quoted.question);
           state = save(journal, { ...state, phase: 'awaiting-confirm', giftQuote: quoted.quote, seenCommentId: reply.id, askedEventId: event.event?.id });
           console.log('Asked', task.id);
+          continue;
+        }
+        if (state.phase === 'reserved') {
+          if (!state.bookingPayment && state.paymentPrompted) {
+            const reply = latestReply(task.id, state.seenCommentId);
+            if (!reply) continue;
+            const intent = replyIntent(reply.comment);
+            if (intent === 'decline') {
+              const quote = state.giftQuote ? `\n\n${state.giftQuote}` : '';
+              await finish(task, resultFile, journal, { ...state, seenCommentId: reply.id }, `${reservationResult(state.selected, state.reservation)}${quote}\n\nThe reservation stands. Sokosumi was not asked to pay.`);
+              continue;
+            }
+            if (intent !== 'confirm') {
+              const event = await ask(task.id, 'Reply yes to request the Sokosumi payment again, or no to finish without it.');
+              save(journal, { ...state, seenCommentId: reply.id, askedEventId: event.event?.id });
+              continue;
+            }
+            state = save(journal, { ...state, seenCommentId: reply.id, paymentPrompted: false });
+          }
+          try {
+            await settleReservation(task, resultFile, journal, state);
+          } catch (error) {
+            const event = await ask(task.id, `The reservation is made. Sokosumi payment was not requested. ${error.message.slice(0, 240)}\n\nReply yes to request the payment again, or no to finish without it.`);
+            state = save(journal, { ...state, paymentPrompted: true, askedEventId: event.event?.id });
+            console.log('Asked', task.id);
+          }
           continue;
         }
         if (state.phase === 'awaiting-details' || state.phase === 'awaiting-choice' || state.phase === 'awaiting-confirm') {
@@ -236,9 +366,17 @@ while (true) {
             console.log('Asked', task.id);
             continue;
           }
-          const summary = renderResult({ ...state.search, stays: [state.selected], checkout, action: 'checkout' });
-          const quote = state.giftQuote ? `\n\n${state.giftQuote}` : '';
-          await finish(task, resultFile, journal, { ...state, seenCommentId: reply.id }, `${summary}${quote}\n\nYou confirmed the stay. It remains pay later with free cancellation. Open the checkout URL to review it. No card was charged from this task, and the gift card was quoted only.`);
+          let reservation;
+          try {
+            reservation = bookReservation(checkout.checkout_url).reservation;
+          } catch (error) {
+            const event = await ask(task.id, `The reservation was not finished. ${error.message.slice(0, 240)}\n\nReply yes to try again, or no to stop.`);
+            state = save(journal, { ...state, seenCommentId: reply.id, askedEventId: event.event?.id });
+            console.log('Asked', task.id);
+            continue;
+          }
+          state = save(journal, { ...state, phase: 'reserved', seenCommentId: reply.id, reservation, paymentPrompted: false });
+          continue;
         }
       } catch (error) {
         console.error('Task blocked', task.id, error.message.slice(0, 200));

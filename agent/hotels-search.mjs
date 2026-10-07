@@ -1,19 +1,33 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { HotelsError, runHotelRequest } from './hotels-api.mjs';
 
-export class HotelsError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = 'HotelsError';
-  }
+export { HotelsError };
+
+export function bookReservation(checkoutUrl) {
+  return runPython({ action: 'book', checkout_url: checkoutUrl });
 }
 
-export function searchStay(input) {
+export function reservationResult(stay, reservation) {
+  const lines = [`Reservation made for ${stay?.name || 'the selected stay'}.`];
+  if (reservation?.itinerary_number) lines.push(`Itinerary: ${reservation.itinerary_number}`);
+  if (reservation?.order_number) lines.push(`Order: ${reservation.order_number}`);
+  lines.push('The stay is pay later with free cancellation.');
+  lines.push('The gift card was quoted only and was not purchased.');
+  return lines.join('\n');
+}
+
+export async function searchStay(input) {
+  if (input?.action !== 'book') return runHotelRequest(input);
+  return runPython(input);
+}
+
+function runPython(input) {
   const python = pythonBin();
   const child = spawnSync(python, ['agent/hotels_cli.py'], {
     input: JSON.stringify(input),
     encoding: 'utf8',
-    timeout: 180000,
+    timeout: input?.action === 'book' ? 240000 : 180000,
     maxBuffer: 4 * 1024 * 1024,
     env: process.env,
   });

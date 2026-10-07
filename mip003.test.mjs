@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { handleMipRequest, inputHash, schemaHash } from './agent/mip003.mjs';
+import { handleMipRequest, inputHash, paymentRequestBody, schemaHash, stayRequest } from './agent/mip003.mjs';
 
 function memoryStore() {
   const jobs = new Map();
@@ -37,6 +37,22 @@ function payment() {
   };
 }
 
+test('registers a Preprod V2 payment for one test USDM', () => {
+  const body = paymentRequestBody({
+    agentIdentifier: 'agent-1',
+    network: 'Preprod',
+    identifierFromPurchaser: 'ab'.repeat(8),
+    inputHash: 'cd'.repeat(32),
+    now: () => Date.parse('2026-10-07T00:00:00.000Z'),
+    env: { SUPPORTED_PAYMENT_SOURCE_INDEX: '0' },
+  });
+  assert.equal(body.paymentSourceType, 'Web3CardanoV2');
+  assert.equal(body.supportedPaymentSourceIndex, 0);
+  assert.equal(body.RequestedFunds[0].amount, '1000000');
+  assert.equal(body.payByTime, '2026-10-07T00:30:00.000Z');
+  assert.equal(body.paymentType, undefined);
+});
+
 test('publishes availability, the input schema, and demo data', async () => {
   const availability = await handleMipRequest({ method: 'GET', path: '/availability' });
   assert.equal(availability.body.status, 'available');
@@ -45,6 +61,21 @@ test('publishes availability, the input schema, and demo data', async () => {
   assert.equal(schema.body.input_data[0].id, 'request');
   const demo = await handleMipRequest({ method: 'GET', path: '/demo' });
   assert.equal(typeof demo.body.output.result, 'string');
+});
+
+test('turns a paid agency search into a stay request for Hotel book expert', () => {
+  const request = stayRequest({
+    trip_request_json: JSON.stringify({
+      stays: {
+        check_in_date: '2026-10-18',
+        check_out_date: '2026-10-22',
+        rooms: [{ adults: 2 }],
+        location: { city: 'Manila', country_code: 'PH' },
+      },
+    }),
+  });
+  assert.match(request, /in Manila from 2026-10-18 to 2026-10-22 for 2 adults/);
+  assert.match(request, /Return the hotel list/);
 });
 
 test('starts a job only from the published schema and keeps it awaiting payment', async () => {

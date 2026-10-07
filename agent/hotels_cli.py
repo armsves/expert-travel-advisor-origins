@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.hotels_api import HotelsError, lookup_city, open_checkout, search_stays
+from agent.hotels_book import confirm_reservation
 
 
 def main() -> None:
@@ -23,6 +24,12 @@ def main() -> None:
 
 
 def run(input_data: dict) -> dict:
+    action = (input_data.get("action") or "search").strip().lower()
+    if action == "book":
+        checkout_url = (input_data.get("checkout_url") or "").strip()
+        if not checkout_url:
+            raise HotelsError("The stay has no checkout to finish")
+        return {"reservation": confirm_reservation(checkout_url)}
     destination_name = (input_data.get("destination") or "").strip()
     check_in = parse_date(input_data.get("check_in"), "check_in")
     check_out = parse_date(input_data.get("check_out"), "check_out")
